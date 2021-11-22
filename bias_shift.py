@@ -16,7 +16,6 @@ import lsst
 import lsst.eotest.image_utils as imutils
 from lsst.eotest.sensor.AmplifierGeometry import makeAmplifierGeometry
 
-pixel_scale = 5
 def tanh_fit(x,a,b,shift,scale):
     return b + shift*(1+np.tanh(2*(x-a)/scale))/2
 
@@ -47,7 +46,7 @@ def find_jumps(bias, n_smooth=30, threshold=1.5):
     d_smooth = (bias_smoothed[1:] - bias_smoothed[:-1])/bias.std()
     return np.where(d_smooth > threshold)[0].flatten()
 
-def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo):
+def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo, pixel_scale=5):
     """Finds shifts in a given list of row-computed bias values.
 
     Returns: 
