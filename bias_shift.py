@@ -14,7 +14,7 @@ import csv
 
 import lsst
 import lsst.eotest.image_utils as imutils
-from AmplifierGeometry import makeAmplifierGeometry
+from lsst.eotest.sensor.AmplifierGeometry import makeAmplifierGeometry
 
 pixel_scale = 5
 def tanh_fit(x,a,b,shift,scale):
@@ -24,10 +24,10 @@ def get_image_data(imagefile, amp):
     """Gets necessary data from given EOTest image
 
     Returns: bias, image, n_overscans
-    bias - List of computed average biases by row
-    image - np.array of brightnesses for given image
-    n_overscans - number of rows of overscan in image"""
-
+        bias - List of computed average biases by row
+        image - np.array of brightnesses for given image
+        n_overscans - number of rows of overscan in image"""
+    
     image_untrimmed = lsst.afw.image.ImageF(imagefile,imutils.dm_hdu(amp))
     amp = makeAmplifierGeometry(imagefile)
     n_overscans = len(image_untrimmed.array)-amp.ny
@@ -60,12 +60,8 @@ def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo):
 
     n_smooth = 30
     jumps_smooth = find_jumps(bias, n_smooth)
-    
-    if not (plotsdir is None): 
-        fig = plt.figure()
 
     for i in range(len(jumps_smooth)):
-        fig = plt.figure(figsize=(12,7))
         left_pixel  = int((jumps_smooth[i]-1)*n_smooth)
         right_pixel = int((jumps_smooth[i]+2)*n_smooth)
         if left_pixel  < 0: left_pixel = 0
@@ -88,12 +84,17 @@ def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo):
 
         shifts.append([ bright_val,params[2], *sensorinfo]) # sensor, segment name
         
-        if plotsdir is None : continue
+        if plotsdir is None :
+            continue
+            
+        fig = plt.figure(figsize=(12,7))
 
-        plt.plot(bias_window)
-        plt.plot(tanh_fit(np.arange(n_window), *params))
+        row_range = np.arange(left_pixel, right_pixel)
+        plt.plot(row_range, bias_window)
+        plt.plot(row_range, tanh_fit(np.arange(n_window), *params))
+        plt.xlabel('Row in segment (pixels)')
         plt.ylabel('Bias (ADU)')
-        plt.text(params[0] + 10, int(params[1]+params[2]/2.) \
+        plt.text(left_pixel + params[0] + 10, int(params[1]+params[2]/2.) \
              ,'Shift: ' + '{:.2f} ADU\nBright Pixel: {:.2e} ADU'.format(params[2], bright_val))
         fig.patch.set_facecolor('white')
         plt.savefig(plotsdir + '/' + sensorinfo[0] + '-' + sensorinfo[1] + '-' + \
@@ -122,7 +123,9 @@ def main():
     flats_directory = os.fsencode(indir)
     shifts = [['Bright Pixel (ADU)', 'Bias Shift (ADU)', \
             'RAFTNAME', 'LSST_NUM', 'RUNNUM', 'EXTNAME', 'IMAGETAG', 'Filename']]
-    out = csv.writer(open(outfile,'w'))
+    with open(outfile, 'w', newline='') as outhandle:
+        out = csv.writer(outhandle)
+        out.writerows(shifts)
 
     for root, dir, f in os.walk(flats_directory):
         for file in f:
@@ -133,12 +136,22 @@ def main():
                 if not 'RAFTNAME' in header:
                     header['RAFTNAME'] = 'single_sensor'
                 for i in range(1,16+1):
-                    segheader = fits.getheader(filename, ext=i) 
-                    shifts = shifts + compute_bias_shift(*get_image_data( filename, i), \
-                             plotsdir, header['RAFTNAME'], header['LSST_NUM'],  \
-                             header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'],filename)
+                    new_shifts = []
+                    try:
+                        segheader = fits.getheader(filename, ext=i) 
+                        new_shifts = compute_bias_shift(*get_image_data( filename, i), \
+                                 plotsdir, header['RAFTNAME'], header['LSST_NUM'],  \
+                                 header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'],filename)
+                        shifts = shifts + new_shifts
+                    except:
+                        print(f'Failed to read seg {i}, continuing....')
+                        continue
+                    if len(new_shifts) > 0:
+                        with open(outfile, 'a', newline='') as outhandle:
+                            out = csv.writer(outhandle)
+                            out.writerows(new_shifts)
+                        
 
-    out.writerows(shifts)
     return
 
 if __name__ == "__main__": main()
