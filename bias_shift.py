@@ -101,6 +101,51 @@ def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo, pixel_sc
         plt.close(fig)
 
     return shifts
+
+def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False):
+    if plotsdir is not None and type(plotsdir) == str:
+        os.makedirs(plotsdir, exist_ok=True)
+    else:
+        plotsdir = None
+    
+    if not append:
+        shifts = [['Bright Pixel (ADU)', 'Bias Shift (ADU)', \
+                'RAFTNAME', 'LSST_NUM', 'RUNNUM', 'EXTNAME', 'IMAGETAG', 'Filename']]
+        with open(outfile, 'w', newline='') as outhandle:
+            out = csv.writer(outhandle)
+            out.writerows(shifts)
+
+    for filename in filenames:
+        #filename = os.path.join(root, file).decode('UTF-8');
+        if filename.endswith('.fits'): 
+            print('Checking file: ' + filename)
+            header = fits.getheader(filename)
+            if not 'RAFTNAME' in header:
+                header['RAFTNAME'] = 'single_sensor'
+                
+            sensor_plotsdir = None
+            if plotsdir:
+                sensor_plotsdir = f'{plotsdir}/{header["RAFTNAME"]}/{header["LSST_NUM"]}'
+                
+            for i in range(1,16+1):
+                new_shifts = []
+                try:
+                    segheader = fits.getheader(filename, ext=i) 
+                    new_shifts = compute_bias_shift(*get_image_data( filename, i), \
+                             sensor_plotsdir, header['RAFTNAME'], header['LSST_NUM'],  \
+                             header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'],filename)
+                    shifts = shifts + new_shifts
+                except:
+                    print(f'Failed to read seg {i}, continuing....')
+                    continue
+                if len(new_shifts) > 0:
+                    with open(outfile, 'a', newline='') as outhandle:
+                        out = csv.writer(outhandle)
+                        out.writerows(new_shifts)
+    
+    return shifts
+
+
     
 def main():
     
@@ -134,22 +179,26 @@ def main():
                 header = fits.getheader(filename)
                 if not 'RAFTNAME' in header:
                     header['RAFTNAME'] = 'single_sensor'
-                for i in range(1,16+1):
-                    new_shifts = []
-                    try:
-                        segheader = fits.getheader(filename, ext=i) 
-                        new_shifts = compute_bias_shift(*get_image_data( filename, i), \
-                                 plotsdir, header['RAFTNAME'], header['LSST_NUM'],  \
-                                 header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'],filename)
-                        shifts = shifts + new_shifts
-                    except:
-                        print(f'Failed to read seg {i}, continuing....')
-                        continue
-                    if len(new_shifts) > 0:
-                        with open(outfile, 'a', newline='') as outhandle:
-                            out = csv.writer(outhandle)
-                            out.writerows(new_shifts)
-                        
+                sensor_plotsdir = None
+            if plotsdir:
+                sensor_plotsdir = f'{plotsdir}/{header["RAFTNAME"]}/{header["LSST_NUM"]}'
+                
+            for i in range(1,16+1):
+                new_shifts = []
+                try:
+                    segheader = fits.getheader(filename, ext=i) 
+                    new_shifts = compute_bias_shift(*get_image_data( filename, i), \
+                             sensor_plotsdir, header['RAFTNAME'], header['LSST_NUM'],  \
+                             header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'],filename)
+                    shifts = shifts + new_shifts
+                except:
+                    print(f'Failed to read seg {i}, continuing....')
+                    continue
+                if len(new_shifts) > 0:
+                    with open(outfile, 'a', newline='') as outhandle:
+                        out = csv.writer(outhandle)
+                        out.writerows(new_shifts)
+                    
 
     return
 
