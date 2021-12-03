@@ -118,9 +118,12 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
             out = csv.writer(outhandle)
             out.writerows(shifts)
 
+    shift_counter = 0
+            
     for filenum, filename in enumerate(filenames):
         #filename = os.path.join(root, file).decode('UTF-8');
-        print(f'Checked {filenum}/{len(filename)} files...', end='\r')
+        sys.stdout.write("\033[K")
+        print(f'Checked {filenum}/{len(filenames)} files. Found {shift_counter} bias shifts.', end='\r')
         if not filename.endswith('.fits'): 
             print(f'Skipping non-FITS file {filename}...')
             continue
@@ -133,7 +136,7 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
             sensor_plotsdir = None
             if plotsdir:
                 sensor_plotsdir = f'{plotsdir}/{header["RAFTNAME"]}/{header["LSST_NUM"]}'
-                
+                os.makedirs(sensor_plotsdir, exist_ok=True)
             for i in range(1,16+1):
                 new_shifts = []
                 
@@ -142,6 +145,7 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
                          sensor_plotsdir, header['RAFTNAME'], header['LSST_NUM'],  \
                          header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'],filename)
                 shifts = shifts + new_shifts
+                shift_counter = shift_counter + len(new_shifts)
                 
                 if len(new_shifts) > 0:
                     with open(outfile, 'a', newline='') as outhandle:
