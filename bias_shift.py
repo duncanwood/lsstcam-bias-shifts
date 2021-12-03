@@ -102,7 +102,7 @@ def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo, pixel_sc
 
     return shifts
 
-def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False):
+def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report_negatives=True):
     if plotsdir is not None and type(plotsdir) == str:
         os.makedirs(plotsdir, exist_ok=True)
     else:
@@ -114,11 +114,18 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False):
         with open(outfile, 'w', newline='') as outhandle:
             out = csv.writer(outhandle)
             out.writerows(shifts)
+        with open(outfile, 'w', newline='') as outhandle:
+            out = csv.writer(outhandle)
+            out.writerows(shifts)
 
-    for filename in filenames:
+    for filenum, filename in enumerate(filenames):
         #filename = os.path.join(root, file).decode('UTF-8');
-        if filename.endswith('.fits'): 
-            print('Checking file: ' + filename)
+        print(f'Checked {filenum}/{len(filename)} files...', end='\r')
+        if not filename.endswith('.fits'): 
+            print(f'Skipping non-FITS file {filename}...')
+            continue
+        else:
+            #print('Checking file: ' + filename)
             header = fits.getheader(filename)
             if not 'RAFTNAME' in header:
                 header['RAFTNAME'] = 'single_sensor'
@@ -129,19 +136,23 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False):
                 
             for i in range(1,16+1):
                 new_shifts = []
-                try:
-                    segheader = fits.getheader(filename, ext=i) 
-                    new_shifts = compute_bias_shift(*get_image_data( filename, i), \
-                             sensor_plotsdir, header['RAFTNAME'], header['LSST_NUM'],  \
-                             header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'],filename)
-                    shifts = shifts + new_shifts
-                except:
-                    print(f'Failed to read seg {i}, continuing....')
-                    continue
+                
+                segheader = fits.getheader(filename, ext=i) 
+                new_shifts = compute_bias_shift(*get_image_data( filename, i), \
+                         sensor_plotsdir, header['RAFTNAME'], header['LSST_NUM'],  \
+                         header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'],filename)
+                shifts = shifts + new_shifts
+                
                 if len(new_shifts) > 0:
                     with open(outfile, 'a', newline='') as outhandle:
                         out = csv.writer(outhandle)
                         out.writerows(new_shifts)
+                elif report_negatives:
+                    with open(outfile, 'a', newline='') as outhandle:
+                        out = csv.writer(outhandle)
+                        negative_row = [['NA', 'NA', \
+                header['RAFTNAME'], header['LSST_NUM'], header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'], filename]]
+                        out.writerows(negative_row)
     
     return shifts
 
@@ -153,11 +164,15 @@ def main():
     parser.add_argument('indir', type=str, nargs=1, help='Directory with input files')
     parser.add_argument('out', type=str, nargs=1, help='Output file for table of shifts')
     parser.add_argument('--plots', type=str, nargs='?',const='plots', help='Save plots of bias shift fits.')
+    parser.add_argument('--append', type=bool, nargs='?',const=False, help='Append to existing output file. Default: False (overwrite)')
+    parser.add_argument('--negatives', type=bool, nargs='?',const=True, help='Report negative results')
 
     args = parser.parse_args()
     indir = args.indir[0] 
     outfile = args.out[0] 
     makeplots = hasattr(args,'plots')
+    append = args.append
+    report_negatives = args.negatives
 
     if makeplots:
         plotsdir = args.plots
@@ -171,35 +186,13 @@ def main():
         out = csv.writer(outhandle)
         out.writerows(shifts)
 
+    filenames = []
     for root, dir, f in os.walk(flats_directory):
         for file in f:
             filename = os.path.join(root, file).decode('UTF-8');
             if filename.endswith('.fits'): 
-                print('Checking file: ' + filename)
-                header = fits.getheader(filename)
-                if not 'RAFTNAME' in header:
-                    header['RAFTNAME'] = 'single_sensor'
-                sensor_plotsdir = None
-            if plotsdir:
-                sensor_plotsdir = f'{plotsdir}/{header["RAFTNAME"]}/{header["LSST_NUM"]}'
-                
-            for i in range(1,16+1):
-                new_shifts = []
-                try:
-                    segheader = fits.getheader(filename, ext=i) 
-                    new_shifts = compute_bias_shift(*get_image_data( filename, i), \
-                             sensor_plotsdir, header['RAFTNAME'], header['LSST_NUM'],  \
-                             header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'],filename)
-                    shifts = shifts + new_shifts
-                except:
-                    print(f'Failed to read seg {i}, continuing....')
-                    continue
-                if len(new_shifts) > 0:
-                    with open(outfile, 'a', newline='') as outhandle:
-                        out = csv.writer(outhandle)
-                        out.writerows(new_shifts)
-                    
-
+                filenames.append(filename)
+    find_shifts_in_files(filenames, outfile, plotsdir=None, append=append, report_negatives=report_negatives)
     return
 
 if __name__ == "__main__": main()
