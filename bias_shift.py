@@ -1,9 +1,12 @@
 import sys
 import os
 import argparse
+import logging
+import time
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import math
 from scipy.optimize import curve_fit
 
@@ -16,10 +19,11 @@ import lsst
 import lsst.eotest.image_utils as imutils
 from lsst.eotest.sensor.AmplifierGeometry import makeAmplifierGeometry
 
+
 def tanh_fit(x,a,b,shift,scale):
     return b + shift*(1+np.tanh(2*(x-a)/scale))/2
 
-def get_image_data(imagefile, amp):
+def get_image_data(imagefile, amp_num, amp_geom):
     """Gets necessary data from given EOTest image
 
     Returns: bias, image, n_overscans
@@ -27,13 +31,13 @@ def get_image_data(imagefile, amp):
         image - np.array of brightnesses for given image
         n_overscans - number of rows of overscan in image"""
     
-    image_untrimmed = lsst.afw.image.ImageF(imagefile,imutils.dm_hdu(amp))
-    amp = makeAmplifierGeometry(imagefile)
-    n_overscans = len(image_untrimmed.array)-amp.ny
-    image = imutils.trim(image_untrimmed, amp.imaging)
-    bias_fn = imutils.bias_row(image_untrimmed, amp.serial_overscan)
+    image_untrimmed = lsst.afw.image.ImageF(imagefile,imutils.dm_hdu(amp_num))
+    
+    n_overscans = len(image_untrimmed.array)-amp_geom.ny
+    image = imutils.trim(image_untrimmed, amp_geom.imaging)
+    bias_fn = imutils.bias_row(image_untrimmed, amp_geom.serial_overscan)
     bias = np.array([bias_fn(i) for i in range(len(image_untrimmed.array))])
-    bias = bias[-amp.ny:] # exclude overscans
+    bias = bias[-amp_geom.ny:] # exclude prescans
 
     return bias, image.array, n_overscans
 
@@ -103,6 +107,11 @@ def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo, pixel_sc
     return shifts
 
 def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report_negatives=True):
+    
+    logging.basicConfig(filename=f'{time.time()}.log', level=logging.DEBUG)
+    
+    processed_files = {}
+    
     if plotsdir is not None and type(plotsdir) == str:
         os.makedirs(plotsdir, exist_ok=True)
     else:
@@ -117,10 +126,19 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
         with open(outfile, 'w', newline='') as outhandle:
             out = csv.writer(outhandle)
             out.writerows(shifts)
+    else:
+        shifts = []
+        with open(outfile, 'r', newline='') as outhandle:
+            existing_data = pd.read_csv(outhandle)
+            processed_files = set(existing_data['Filename'])
+            
 
     shift_counter = 0
             
     for filenum, filename in enumerate(filenames):
+        if filename in processed_files:
+            logging.debug(f'Skipped file {filename} - found recorded results')
+            continue
         #filename = os.path.join(root, file).decode('UTF-8');
         sys.stdout.write("\033[K")
         print(f'Checked {filenum}/{len(filenames)} files. Found {shift_counter} bias shifts.', end='\r')
@@ -129,6 +147,7 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
             continue
         else:
             #print('Checking file: ' + filename)
+            logging.debug(f'Analyzing file {filename}...')
             header = fits.getheader(filename)
             if not 'RAFTNAME' in header:
                 header['RAFTNAME'] = 'single_sensor'
@@ -137,15 +156,23 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
             if plotsdir:
                 sensor_plotsdir = f'{plotsdir}/{header["RAFTNAME"]}/{header["LSST_NUM"]}'
                 os.makedirs(sensor_plotsdir, exist_ok=True)
+            amp_geom = makeAmplifierGeometry(filename)
             for i in range(1,16+1):
                 new_shifts = []
                 
-                segheader = fits.getheader(filename, ext=i) 
-                new_shifts = compute_bias_shift(*get_image_data( filename, i), \
-                         sensor_plotsdir, header['RAFTNAME'], header['LSST_NUM'],  \
-                         header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'],filename)
+                try: 
+                    segheader = fits.getheader(filename, ext=i) 
+                    new_shifts = compute_bias_shift(*get_image_data( filename, i, amp_geom), \
+                             sensor_plotsdir, header['RAFTNAME'], header['LSST_NUM'],  \
+                             header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'],filename)
+                except Exception as error:
+                    print(error)
+                    continue
                 shifts = shifts + new_shifts
                 shift_counter = shift_counter + len(new_shifts)
+                
+                
+                logging.debug(f'Found {len(new_shifts)} shifts in {segheader["EXTNAME"]}')
                 
                 if len(new_shifts) > 0:
                     with open(outfile, 'a', newline='') as outhandle:
@@ -163,6 +190,8 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
 
     
 def main():
+    
+    logging.basicConfig(filename=f'{time.time()}.log', encoding='utf-8', level=logging.DEBUG)
     
     parser = argparse.ArgumentParser(description='Find bias shifts in given EOTest images.')
     parser.add_argument('indir', type=str, nargs=1, help='Directory with input files')
