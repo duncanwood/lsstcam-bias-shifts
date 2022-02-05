@@ -19,6 +19,23 @@ import lsst
 import lsst.eotest.image_utils as imutils
 from lsst.eotest.sensor.AmplifierGeometry import makeAmplifierGeometry
 
+logger = logging.getLogger(__name__)
+logger.setLevel(level=logging.DEBUG)
+
+try:
+    os.mkdir('bias_shift_logs')
+except FileExistsError:
+    pass
+fh = logging.FileHandler(f'bias_shift_logs/{time.time()}.log')
+fh.setLevel(logging.DEBUG)
+logger.addHandler(fh)
+
+ch = logging.StreamHandler(sys.stdout)
+ch.setLevel(logging.ERROR)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+logger.addHandler(ch)
+
 
 def tanh_fit(x,a,b,shift,scale):
     return b + shift*(1+np.tanh(2*(x-a)/scale))/2
@@ -50,7 +67,7 @@ def find_jumps(bias, n_smooth=30, threshold=1.5):
     d_smooth = (bias_smoothed[1:] - bias_smoothed[:-1])/bias.std()
     return np.where(d_smooth > threshold)[0].flatten()
 
-def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo, pixel_scale=5):
+def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo, jump_scale=5, smoothing_scale=30):
     """Finds shifts in a given list of row-computed bias values.
 
     Returns: 
@@ -61,7 +78,7 @@ def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo, pixel_sc
 
     shifts = []
 
-    n_smooth = 30
+    n_smooth = smoothing_scale
     jumps_smooth = find_jumps(bias, n_smooth)
 
     for i in range(len(jumps_smooth)):
@@ -75,7 +92,7 @@ def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo, pixel_sc
         
         params, cov = curve_fit(tanh_fit, np.arange(n_window), bias_window,\
                             p0=[n_window/2,bias_window.mean(), \
-                            max(bias_window)-min(bias_window),pixel_scale], \
+                            max(bias_window)-min(bias_window),jump_scale], \
                             bounds=((0,min(bias_window),0,2), \
                                 (n_window-1, max(bias_window), \
                                     max(bias_window)-min(bias_window),10)))
@@ -85,7 +102,7 @@ def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo, pixel_sc
         bright_val = np.amax(image[bright_low : bright_high,:])
         bright_loc = np.where(image == bright_val)
 
-        shifts.append([ bright_val,params[2], *sensorinfo]) # sensor, segment name
+        shifts.append([ bright_val,'{:.3f}'.format(params[2]), '{:.3f}'.format(params[0]),'{:.3f}'.format(params[3]), *sensorinfo]) # sensor, segment name
         
         if plotsdir is None :
             continue
@@ -108,8 +125,6 @@ def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo, pixel_sc
 
 def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report_negatives=True):
     
-    logging.basicConfig(filename=f'{time.time()}.log', level=logging.DEBUG)
-    
     processed_files = {}
     
     if plotsdir is not None and type(plotsdir) == str:
@@ -117,8 +132,17 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
     else:
         plotsdir = None
     
+    if append: 
+        shifts = []
+        try:
+            with open(outfile, 'r', newline='') as outhandle:
+                existing_data = pd.read_csv(outhandle)
+                processed_files = set(existing_data['Filename'])
+        except FileNotFoundError: 
+            append = False
+            pass
     if not append:
-        shifts = [['Bright Pixel (ADU)', 'Bias Shift (ADU)', \
+        shifts = [['Bright Pixel (ADU)', 'Bias Shift (ADU)', 'Shift row (pixels)', 'Shift speed (pixels)', \
                 'RAFTNAME', 'LSST_NUM', 'RUNNUM', 'EXTNAME', 'IMAGETAG', 'Filename']]
         with open(outfile, 'w', newline='') as outhandle:
             out = csv.writer(outhandle)
@@ -126,28 +150,24 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
         with open(outfile, 'w', newline='') as outhandle:
             out = csv.writer(outhandle)
             out.writerows(shifts)
-    else:
-        shifts = []
-        with open(outfile, 'r', newline='') as outhandle:
-            existing_data = pd.read_csv(outhandle)
-            processed_files = set(existing_data['Filename'])
+
             
 
     shift_counter = 0
             
     for filenum, filename in enumerate(filenames):
         if filename in processed_files:
-            logging.debug(f'Skipped file {filename} - found recorded results')
+            logger.debug(f'Skipped file {filename} - found recorded results')
             continue
         #filename = os.path.join(root, file).decode('UTF-8');
-        sys.stdout.write("\033[K")
-        print(f'Checked {filenum}/{len(filenames)} files. Found {shift_counter} bias shifts.', end='\r')
+        #sys.stdout.write("\033[K")
+        logger.debug(f'Checked {filenum}/{len(filenames)} files. Found {shift_counter} bias shifts.')
         if not filename.endswith('.fits'): 
-            print(f'Skipping non-FITS file {filename}...')
+            logger.debug(f'Skipping non-FITS file {filename}...')
             continue
         else:
             #print('Checking file: ' + filename)
-            logging.debug(f'Analyzing file {filename}...')
+            logger.debug(f'Analyzing file {filename}...')
             header = fits.getheader(filename)
             if not 'RAFTNAME' in header:
                 header['RAFTNAME'] = 'single_sensor'
@@ -166,13 +186,13 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
                              sensor_plotsdir, header['RAFTNAME'], header['LSST_NUM'],  \
                              header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'],filename)
                 except Exception as error:
-                    print(error)
+                    logger.error(error)
                     continue
                 shifts = shifts + new_shifts
                 shift_counter = shift_counter + len(new_shifts)
                 
                 
-                logging.debug(f'Found {len(new_shifts)} shifts in {segheader["EXTNAME"]}')
+                logger.debug(f'Found {len(new_shifts)} shifts in {segheader["EXTNAME"]}')
                 
                 if len(new_shifts) > 0:
                     with open(outfile, 'a', newline='') as outhandle:
@@ -181,7 +201,7 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
                 elif report_negatives:
                     with open(outfile, 'a', newline='') as outhandle:
                         out = csv.writer(outhandle)
-                        negative_row = [['NA', 'NA', \
+                        negative_row = [['NA', 'NA', 'NA', 'NA', \
                 header['RAFTNAME'], header['LSST_NUM'], header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'], filename]]
                         out.writerows(negative_row)
     
@@ -191,7 +211,7 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
     
 def main():
     
-    logging.basicConfig(filename=f'{time.time()}.log', encoding='utf-8', level=logging.DEBUG)
+    #logging.basicConfig(filename=f'{time.time()}.log', encoding='utf-8', level=logging.DEBUG)
     
     parser = argparse.ArgumentParser(description='Find bias shifts in given EOTest images.')
     parser.add_argument('indir', type=str, nargs=1, help='Directory with input files')
@@ -213,7 +233,7 @@ def main():
     else:
         plotsdir = None
     flats_directory = os.fsencode(indir)
-    shifts = [['Bright Pixel (ADU)', 'Bias Shift (ADU)', \
+    shifts = [['Bright Pixel (ADU)', 'Bias Shift (ADU)', 'Shift row', \
             'RAFTNAME', 'LSST_NUM', 'RUNNUM', 'EXTNAME', 'IMAGETAG', 'Filename']]
     with open(outfile, 'w', newline='') as outhandle:
         out = csv.writer(outhandle)
