@@ -101,8 +101,9 @@ def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo, jump_sca
         bright_high = left_pixel+int(params[0]+3*params[-1]) + n_overscans 
         bright_val = np.amax(image[bright_low : bright_high,:])
         bright_loc = np.where(image == bright_val)
+        shift_row  = left_pixel + params[0]
 
-        shifts.append([ bright_val,'{:.3f}'.format(params[2]), '{:.3f}'.format(params[0]),'{:.3f}'.format(params[3]), *sensorinfo]) # sensor, segment name
+        shifts.append([ bright_val,'{:.3f}'.format(params[2]), '{:.3f}'.format(shift_row),'{:.3f}'.format(params[3]), *sensorinfo]) # sensor, segment name
         
         if plotsdir is None :
             continue
@@ -123,7 +124,7 @@ def compute_bias_shift(bias, image, n_overscans, plotsdir, *sensorinfo, jump_sca
 
     return shifts
 
-def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report_negatives=True):
+def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report_negatives=True, cache_biases=None):
     
     processed_files = {}
     
@@ -131,6 +132,11 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
         os.makedirs(plotsdir, exist_ok=True)
     else:
         plotsdir = None
+        
+    if cache_biases is not None and type(cache_biases) == str:
+        os.makedirs(cache_biases, exist_ok=True)
+    else:
+        cache_biases = None
     
     if append: 
         shifts = []
@@ -154,6 +160,8 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
             
 
     shift_counter = 0
+    
+    oscan_cache = {}
             
     for filenum, filename in enumerate(filenames):
         if filename in processed_files:
@@ -167,7 +175,10 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
             continue
         else:
             #print('Checking file: ' + filename)
-            logger.debug(f'Analyzing file {filename}...')
+            logger.info(f'Analyzing file {filename}...')
+            
+            oscan_cache = {}
+            
             header = fits.getheader(filename)
             if not 'RAFTNAME' in header:
                 header['RAFTNAME'] = 'single_sensor'
@@ -181,8 +192,9 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
                 new_shifts = []
                 
                 try: 
-                    segheader = fits.getheader(filename, ext=i) 
-                    new_shifts = compute_bias_shift(*get_image_data( filename, i, amp_geom), \
+                    segheader = fits.getheader(filename, ext=i)
+                    bias, image, n_overscans = get_image_data( filename, i, amp_geom)
+                    new_shifts = compute_bias_shift(bias, image, n_overscans, \
                              sensor_plotsdir, header['RAFTNAME'], header['LSST_NUM'],  \
                              header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'],filename)
                 except Exception as error:
@@ -192,18 +204,34 @@ def find_shifts_in_files(filenames, outfile, plotsdir=None, append=False, report
                 shift_counter = shift_counter + len(new_shifts)
                 
                 
-                logger.debug(f'Found {len(new_shifts)} shifts in {segheader["EXTNAME"]}')
-                
                 if len(new_shifts) > 0:
+                    logger.info(f'Found {len(new_shifts)} shifts in {segheader["EXTNAME"]}. Total is  {shift_counter}.')
                     with open(outfile, 'a', newline='') as outhandle:
                         out = csv.writer(outhandle)
                         out.writerows(new_shifts)
                 elif report_negatives:
+                    logger.debug(f'Found {len(new_shifts)} shifts in {segheader["EXTNAME"]}. Total is  {shift_counter}.')
                     with open(outfile, 'a', newline='') as outhandle:
                         out = csv.writer(outhandle)
                         negative_row = [['NA', 'NA', 'NA', 'NA', \
                 header['RAFTNAME'], header['LSST_NUM'], header['RUNNUM'], segheader['EXTNAME'], header['IMAGETAG'], filename]]
                         out.writerows(negative_row)
+                if cache_biases:
+                    if header['IMAGETAG'] not in oscan_cache:
+                        oscan_cache[header['IMAGETAG']] = { (header['LSST_NUM'], segheader['EXTNAME']) : bias } 
+                    else: 
+                        oscan_cache[header['IMAGETAG']][(header['LSST_NUM'], segheader['EXTNAME'])] = bias 
+            if cache_biases:  
+                
+                
+                dirs = filename.split('/') 
+                cache_filename = dirs[-1][:-5]
+                cache_file_dirs = f"{cache_biases}/{dirs[-3]}/{dirs[-2]}"
+                cache_file_loc = f'{cache_file_dirs}/{cache_filename}.p'
+                
+                os.makedirs(cache_file_dirs, exist_ok=True)
+                df = pd.DataFrame(oscan_cache)
+                df.to_pickle(cache_file_loc)
     
     return shifts
 
